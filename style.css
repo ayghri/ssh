@@ -113,6 +113,32 @@ button:hover:not(:disabled) {
 
 .status.error { color: var(--error); }
 
+/* Spinner shown while the model is running. The .running modifier
+   colours the text and makes the status a flex row so the spinner
+   aligns with the message. */
+.status.running {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--fg);
+}
+.status .spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2.5px solid var(--border);
+  border-top-color: var(--accent, #3a7bd5);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+  flex-shrink: 0;
+}
+.status .spinner-msg {
+  white-space: pre-wrap;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .output {
   background: var(--panel);
   border: 1px solid var(--border);

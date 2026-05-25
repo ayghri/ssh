@@ -7,26 +7,26 @@
 // specific origin) and AllowedMethods: ["GET"].
 
 export const CONFIG = {
-  // Large binary assets are served from S3 (much faster than GitHub
-  // Pages for big files). The bucket needs CORS allowing GET from
-  // the page origin (see README). Bump `?v=N` on every re-upload to
-  // bust browser caches without waiting for the 1-year immutable TTL
-  // to expire.
+  // Large binary assets are served from the CDN at files.ayghri.com.
+  // The bucket needs CORS allowing GET from the page origin (see README).
+  // No query-string versioning: when assets change, invalidate the CDN
+  // cache for the path (or upload with a short max-age) so visitors
+  // pick up the new file at the same URL.
   //
-  // Local-dev fallback: comment the S3 lines and uncomment the
+  // Local-dev fallback: comment the CDN lines and uncomment the
   // ./build/* lines to test from `python3 serve.py` without touching S3.
-  MODEL_URL:     "https://files.ayghri.com/ssh/e6.onnx?v=4",
-  META_URL:      "https://files.ayghri.com/ssh/meta.json?v=4",
-  STATS_URL:     "https://files.ayghri.com/ssh/obs_yearly_stats.bin?v=4",
-  KEEP_MASK_URL: "https://files.ayghri.com/ssh/keep_mask.bin?v=4",
-  COS_LAT_URL:   "https://files.ayghri.com/ssh/cos_lat_per_cell.bin?v=4",
-  OBS_TRENDS_URL: "https://files.ayghri.com/ssh/obs_trends.bin?v=4",
+  MODEL_URL:     "https://files.ayghri.com/ssh/e6.onnx",
+  META_URL:      "https://files.ayghri.com/ssh/meta.json",
+  STATS_URL:     "https://files.ayghri.com/ssh/obs_yearly_stats.bin",
+  KEEP_MASK_URL: "https://files.ayghri.com/ssh/keep_mask.bin",
+  COS_LAT_URL:   "https://files.ayghri.com/ssh/cos_lat_per_cell.bin",
+  OBS_TRENDS_URL: "https://files.ayghri.com/ssh/obs_trends.bin",
   // Local-dev fallback:
-  // MODEL_URL:     "./build/e6.onnx?v=4",
-  // META_URL:      "./build/meta.json?v=4",
-  // STATS_URL:     "./build/obs_yearly_stats.bin?v=4",
-  // KEEP_MASK_URL: "./build/keep_mask.bin?v=4",
-  // COS_LAT_URL:   "./build/cos_lat_per_cell.bin?v=4",
+  // MODEL_URL:     "./build/e6.onnx",
+  // META_URL:      "./build/meta.json",
+  // STATS_URL:     "./build/obs_yearly_stats.bin",
+  // KEEP_MASK_URL: "./build/keep_mask.bin",
+  // COS_LAT_URL:   "./build/cos_lat_per_cell.bin",
 
   // ONNX Runtime Web build to load.
   //

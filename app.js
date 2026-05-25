@@ -7,7 +7,7 @@
 //   4. on Run: build (1, N_keep, n_input_channels) -> session.run() ->
 //      scale to mm/yr -> demean area-weighted -> render
 
-import { CONFIG } from "./config.js?v=3";
+import { CONFIG } from "./config.js";
 
 const statusEl = document.getElementById("status");
 const anchorSel = document.getElementById("anchor");
@@ -238,10 +238,11 @@ function populateAnchorSelect() {
 
 function populateHorizonSelect() {
   const a = parseInt(anchorSel.value, 10);
-  // Allow all model horizons, marking those that go past obs end.
   const obsEnd = META.obs_last_full_year;
+  // Preserve the user's current horizon choice across anchor changes
+  // (the options' VALUES stay the same; only the date labels change).
+  const prev = horizonSel.value;
   horizonSel.innerHTML = "";
-  // The brief asks for 5, 10, 15, 20 -- drop the 30yr unless it stays in range.
   const wanted = [5, 10, 15, 20];
   for (const h of wanted) {
     if (!META.horizons_yr.includes(h)) continue;
@@ -252,6 +253,11 @@ function populateHorizonSelect() {
       ? `${h} yr  (ends ${endY}, past obs)`
       : `${h} yr  (${a}–${endY})`;
     horizonSel.appendChild(opt);
+  }
+  // Re-select the previous horizon if it is still in the list;
+  // fall back to the default selection (first option) otherwise.
+  if (prev && Array.from(horizonSel.options).some(o => o.value === prev)) {
+    horizonSel.value = prev;
   }
 }
 
@@ -385,23 +391,46 @@ function drawColorbar(vmax) {
   drawColorbarTo(vmax, cbarCanvas, cbarCtx);
 }
 
+// Show or hide the spinner shown next to the status text while a long
+// inference call is in flight.
+function showSpinner(msg) {
+  statusEl.classList.add("running");
+  statusEl.innerHTML =
+    `<span class="spinner" aria-hidden="true"></span>` +
+    `<span class="spinner-msg">${msg}</span>`;
+}
+function hideSpinner() {
+  statusEl.classList.remove("running");
+}
+
 async function runOnce() {
   if (!SESSION) return;
   runBtn.disabled = true;
+  showSpinner("running the model…");
+  // Yield to the browser so the spinner actually paints before we start
+  // the (synchronous) wasm inference call that pegs the main thread.
+  await new Promise(r => setTimeout(r, 0));
   const anchor = parseInt(anchorSel.value, 10);
   const horizon = parseInt(horizonSel.value, 10);
   const hIdx = META.horizons_yr.indexOf(horizon);
-  if (hIdx < 0) { setStatus(`unknown horizon ${horizon}`, true); runBtn.disabled = false; return; }
+  if (hIdx < 0) {
+    hideSpinner();
+    setStatus(`unknown horizon ${horizon}`, true);
+    runBtn.disabled = false;
+    return;
+  }
 
   try {
     const t0 = performance.now();
-    setStatus(`building features for anchor ${anchor}…`);
+    showSpinner(`building features for anchor ${anchor}…`);
     const feats = buildFeatures(anchor);
     const nKeep = META.n_keep;
     const nIn = META.n_input_channels;
 
     const inputTensor = new ORT.Tensor("float32", feats, [1, nKeep, nIn]);
-    setStatus(`running inference…`);
+    showSpinner(`running the model (this can take a few seconds)…`);
+    // Another yield so the spinner repaints with the new message.
+    await new Promise(r => setTimeout(r, 0));
     const t1 = performance.now();
     const inputName = SESSION.inputNames[0];
     const outputName = SESSION.outputNames[0];
@@ -445,9 +474,11 @@ async function runOnce() {
     // ---- AVISO observed trend for the same (anchor, horizon) ----
     renderObsTrend(anchor, horizon, field, std);
 
+    hideSpinner();
     setStatus(`done in ${(t2 - t0).toFixed(0)} ms (inference ${(t2 - t1).toFixed(0)} ms)`);
   } catch (e) {
     console.error(e);
+    hideSpinner();
     setStatus(`error: ${e.message}`, true);
   } finally {
     runBtn.disabled = false;
