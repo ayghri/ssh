@@ -29,6 +29,31 @@ const obsMapCtx = obsMapCanvas ? obsMapCanvas.getContext("2d") : null;
 const obsCbarCtx = obsCbarCanvas ? obsCbarCanvas.getContext("2d") : null;
 if (obsMapCtx) obsMapCtx.imageSmoothingEnabled = false;
 
+// Scale each canvas's internal pixel buffer by min(2, devicePixelRatio)
+// while keeping its CSS size unchanged. Combined with the bilinear
+// smoothing in renderFieldTo, this approximately doubles the effective
+// rendering resolution -- a much closer match to matplotlib pcolormesh
+// than the original 1:1 canvas. We cap at 2x to avoid bloating draw
+// time on 3x phones without much visible payoff.
+function scaleCanvasForHiDPI(canvas, ctx) {
+  if (!canvas || !ctx) return;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  if (dpr === 1) return;
+  const cssW = canvas.width;
+  const cssH = canvas.height;
+  canvas.style.width = cssW + "px";
+  canvas.style.height = cssH + "px";
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  // Drawing coords stay in CSS space; the upscale happens automatically
+  // through the transform set on the context.
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+scaleCanvasForHiDPI(mapCanvas, mapCtx);
+scaleCanvasForHiDPI(cbarCanvas, cbarCtx);
+scaleCanvasForHiDPI(obsMapCanvas, obsMapCtx);
+scaleCanvasForHiDPI(obsCbarCanvas, obsCbarCtx);
+
 // ---- State ----
 let META = null;
 let KEEP = null;           // Uint8Array(64800)
@@ -312,6 +337,11 @@ function buildFeatures(anchorYear) {
 
 // Render a (N_keep,) field as a 180x360 PlateCarree map onto the given
 // canvas. Pass null for `titleElement` to skip title update.
+// Shift the map so the left/right seam runs through Africa instead of
+// cutting the Atlantic in half. 30 = central meridian moves to 210 deg E,
+// matching the matplotlib PNGs (Robinson, central_longitude=210).
+const LON_SHIFT_DEG = 30;
+
 function renderFieldTo(field, vmax, title, mapCanvasEl, mapCtxEl,
                        cbarCanvasEl, cbarCtxEl, titleElement) {
   const nLat = META.lat_size, nLon = META.lon_size;
@@ -329,14 +359,16 @@ function renderFieldTo(field, vmax, title, mapCanvasEl, mapCtxEl,
     data[i * 4 + 3] = 255;
   }
 
-  // Ocean cells.
+  // Ocean cells. Apply the longitude shift so the left edge is at
+  // LON_SHIFT_DEG instead of 0 (puts Africa at the seam, not the Atlantic).
   const invVmax = 1.0 / Math.max(vmax, 1e-12);
   for (let k = 0; k < META.n_keep; k++) {
     const flat = KEEP_IDX[k];
     const lat = Math.floor(flat / nLon);
     const lon = flat % nLon;
+    const lonShifted = (lon - LON_SHIFT_DEG + nLon) % nLon;
     const row = (nLat - 1) - lat;
-    const px = (row * nLon + lon) * 4;
+    const px = (row * nLon + lonShifted) * 4;
     let t = field[k] * invVmax;
     if (t < -1) t = -1; else if (t > 1) t = 1;
     const li = Math.round((t + 1) * 0.5 * 255);
@@ -346,9 +378,17 @@ function renderFieldTo(field, vmax, title, mapCanvasEl, mapCtxEl,
   }
   sctx.putImageData(img, 0, 0);
 
-  mapCtxEl.clearRect(0, 0, mapCanvasEl.width, mapCanvasEl.height);
-  mapCtxEl.imageSmoothingEnabled = false;
-  mapCtxEl.drawImage(small, 0, 0, mapCanvasEl.width, mapCanvasEl.height);
+  // Draw in CSS-pixel coords (clientWidth/Height), because the canvas
+  // has been HiDPI-scaled at boot via setTransform(dpr, ...).
+  const W = mapCanvasEl.clientWidth || mapCanvasEl.width;
+  const H = mapCanvasEl.clientHeight || mapCanvasEl.height;
+  mapCtxEl.clearRect(0, 0, W, H);
+  // Smoothing on for a pcolormesh-style bilinear upscale. Combined with
+  // the HiDPI canvas scale-up, this gives a much closer match to
+  // matplotlib's render than the blocky nearest-neighbour pass.
+  mapCtxEl.imageSmoothingEnabled = true;
+  mapCtxEl.imageSmoothingQuality = "high";
+  mapCtxEl.drawImage(small, 0, 0, W, H);
   if (titleElement) titleElement.textContent = title;
   drawColorbarTo(vmax, cbarCanvasEl, cbarCtxEl);
 }
@@ -360,7 +400,9 @@ function renderField(field, vmax, title) {
 }
 
 function drawColorbarTo(vmax, cbarCanvasEl, cbarCtxEl) {
-  const W = cbarCanvasEl.width, H = cbarCanvasEl.height;
+  // CSS-pixel coords (canvas is HiDPI-scaled via setTransform).
+  const W = cbarCanvasEl.clientWidth || cbarCanvasEl.width;
+  const H = cbarCanvasEl.clientHeight || cbarCanvasEl.height;
   cbarCtxEl.clearRect(0, 0, W, H);
   const barH = 16, pad = 12;
   const x0 = pad, x1 = W - pad;
