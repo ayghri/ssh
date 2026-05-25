@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sea-level trend forecast - E6 (browser demo)</title>
+  <link rel="stylesheet" href="./style.css">
+  <!-- Inject COOP/COEP via a service worker so the page becomes
+       crossOriginIsolated and SharedArrayBuffer / threaded wasm work
+       even on hosts (GitHub Pages, etc.) that cannot set HTTP headers.
+       MUST be loaded BEFORE any other JS. -->
+  <script src="./coi-serviceworker.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Sea-level trend forecast &mdash; E6 (browser demo)</h1>
+    <p class="subtitle">
+      Predicts the regional pattern of sea-surface-height trend over a
+      future window from the past 10 years of observations.
+      Runs entirely in your browser via ONNX Runtime Web + WebGPU.
+    </p>
+  </header>
+
+  <main>
+    <section class="controls">
+      <div class="control">
+        <label for="anchor">Anchor year</label>
+        <select id="anchor" disabled></select>
+      </div>
+      <div class="control">
+        <label for="horizon">Trend horizon</label>
+        <select id="horizon" disabled></select>
+      </div>
+      <button id="run" disabled>Run</button>
+    </section>
+
+    <section class="status" id="status">
+      Loading&hellip;
+    </section>
+
+    <section class="output">
+      <h2 id="output-title">Predicted SSH trend</h2>
+      <canvas id="map" width="900" height="450"></canvas>
+      <canvas id="colorbar" width="900" height="42"></canvas>
+      <p class="vmax" id="vmax-info"></p>
+    </section>
+
+    <details class="about">
+      <summary>About this demo</summary>
+      <p>
+        E6 is a graph-attention sea-level trend forecaster trained on the
+        CESM2 large ensemble (90 members &times; 200 anchors). It maps
+        the past 10 years of yearly summary statistics of five climate
+        variables (SHF, SSH, SST, TAUX, TAUY) on a 1&deg; ocean grid to
+        the OLS slope of forced-response SSH at five horizons
+        (5/10/15/20/30 years). At inference it is run zero-shot on
+        AVISO/HadISST/ERA5 observations with per-timestep SSH demean to
+        match the CESM2 Boussinesq convention. The model is published
+        as part of the doctoral thesis on emulation-style climate
+        forecasting; see the <em>Sea-level trends</em> chapter for the
+        full architecture, training protocol, and skill results.
+      </p>
+      <p>
+        Output is the &plusmn;<em>vmax</em>-clipped trend pattern in
+        mm/yr with the area-weighted global mean removed (the model
+        predicts pattern, not GMSL). <em>vmax</em> is set to 1.5&times;
+        the area-weighted standard deviation of the predicted field, so
+        the colormap fills with the bulk of the signal and the tails
+        saturate.
+      </p>
+    </details>
+  </main>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
