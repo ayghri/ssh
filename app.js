@@ -7,7 +7,7 @@
 //   4. on Run: build (1, N_keep, n_input_channels) -> session.run() ->
 //      scale to mm/yr -> demean area-weighted -> render
 
-import { CONFIG } from "./config.js";
+import { CONFIG } from "./config.js?v=3";
 
 const statusEl = document.getElementById("status");
 const anchorSel = document.getElementById("anchor");
