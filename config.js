@@ -20,6 +20,7 @@ export const CONFIG = {
   STATS_URL:     "https://files.ayghri.com/ssh/obs_yearly_stats.bin?v=3",
   KEEP_MASK_URL: "https://files.ayghri.com/ssh/keep_mask.bin?v=3",
   COS_LAT_URL:   "https://files.ayghri.com/ssh/cos_lat_per_cell.bin?v=3",
+  OBS_TRENDS_URL: "https://files.ayghri.com/ssh/obs_trends.bin?v=3",
   // Local-dev fallback:
   // MODEL_URL:     "./build/e6.onnx?v=3",
   // META_URL:      "./build/meta.json?v=3",

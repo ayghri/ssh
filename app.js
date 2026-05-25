@@ -20,6 +20,14 @@ const cbarCanvas = document.getElementById("colorbar");
 const mapCtx = mapCanvas.getContext("2d");
 const cbarCtx = cbarCanvas.getContext("2d");
 mapCtx.imageSmoothingEnabled = false;
+// Optional second pair of canvases for AVISO observed comparison.
+const obsTitleEl = document.getElementById("obs-title");
+const obsVmaxEl = document.getElementById("vmax-obs-info");
+const obsMapCanvas = document.getElementById("map-obs");
+const obsCbarCanvas = document.getElementById("colorbar-obs");
+const obsMapCtx = obsMapCanvas ? obsMapCanvas.getContext("2d") : null;
+const obsCbarCtx = obsCbarCanvas ? obsCbarCanvas.getContext("2d") : null;
+if (obsMapCtx) obsMapCtx.imageSmoothingEnabled = false;
 
 // ---- State ----
 let META = null;
@@ -29,6 +37,9 @@ let COS_LAT = null;        // Float32Array(N_keep)
 let STATS = null;          // Float16 raw bytes wrapped in Uint16Array;
                             // shape (n_years, 4, 5, N_keep) C-order.
 let STATS_F32_LAST_SLAB = null; // optional cache: not strictly needed
+let OBS_TRENDS = null;     // Uint16Array(n_rows * n_keep), fp16 packed
+let OBS_TRENDS_SHAPE = null;
+let OBS_TRENDS_INDEX = null; // Map "anchor|horizon" -> row index
 let SESSION = null;
 let ORT = null;
 
@@ -155,6 +166,27 @@ async function boot() {
     STATS = new Uint16Array(statsBytes.buffer, statsBytes.byteOffset,
                               statsBytes.length / 2);
 
+    // Optional obs-trends bundle (AVISO observed trend per anchor/horizon).
+    // If the URL is configured AND meta has the layout block, fetch and
+    // index. Otherwise the obs panel just stays hidden.
+    if (CONFIG.OBS_TRENDS_URL && META.obs_trends_layout) {
+      setStatus("loading AVISO observed trends…");
+      const obsBytes = await fetchProgress(CONFIG.OBS_TRENDS_URL,
+                                            "obs_trends.bin");
+      const shape = META.obs_trends_layout.shape;          // [n_rows, n_keep]
+      const expected = shape[0] * shape[1] * 2;
+      if (obsBytes.length !== expected) {
+        throw new Error(`obs_trends size ${obsBytes.length} != ${expected}`);
+      }
+      OBS_TRENDS = new Uint16Array(obsBytes.buffer, obsBytes.byteOffset,
+                                     obsBytes.length / 2);
+      OBS_TRENDS_SHAPE = shape;
+      OBS_TRENDS_INDEX = new Map();
+      META.obs_trends_layout.rows.forEach((r, i) => {
+        OBS_TRENDS_INDEX.set(`${r.anchor}|${r.horizon}`, i);
+      });
+    }
+
     setStatus("loading ONNX runtime…");
     ORT = await import(CONFIG.ORT_URL);
     ORT.env.wasm.wasmPaths = CONFIG.ORT_WASM_BASE;
@@ -238,19 +270,25 @@ function buildFeatures(anchorYear) {
   }
 
   // STATS layout on disk: (year, stat, var, cell)  C-order, fp16.
-  // Model wants channels in (stat, var, year) order, flattened.
-  // input[0, k, c] where c = ((stat * nVars + var) * nYears + ypast) for
-  // ypast in [0..nYears-1] (oldest first -> newest last).
+  // The training dataset (scripts/38_forced_inference_obs.py
+  // `_yearly_feat_at`) flattens per-cell as
+  //   [cur(V), mean(V), slope(V), std(V)]  per year, then concat years.
+  // So the model's input channel index is:
+  //   c = ((year * nStats) + stat) * nVars + var
+  // i.e. YEAR-major, STAT-mid, VAR-fastest.  Using any other order
+  // permutes the input channels relative to the trained linear-embed
+  // weights, which yields output with the right magnitude statistics
+  // but the wrong spatial pattern.
   const out = new Float32Array(nKeep * nIn);
 
   const yearStride = nStats * nVars * nKeep;           // floats per year on disk
   const statStride = nVars * nKeep;
   const varStride = nKeep;
 
-  for (let s = 0; s < nStats; s++) {
-    for (let v = 0; v < nVars; v++) {
-      for (let yp = 0; yp < nYears; yp++) {
-        const cBase = ((s * nVars + v) * nYears + yp);   // 0..199
+  for (let yp = 0; yp < nYears; yp++) {
+    for (let s = 0; s < nStats; s++) {
+      for (let v = 0; v < nVars; v++) {
+        const cBase = ((yp * nStats + s) * nVars + v);   // 0..199
         const srcOff = (y0 + yp) * yearStride + s * statStride + v * varStride;
         for (let k = 0; k < nKeep; k++) {
           out[k * nIn + cBase] = f16toF32(STATS[srcOff + k]);
@@ -266,8 +304,10 @@ function buildFeatures(anchorYear) {
   return out;
 }
 
-// Render a (N_keep,) field as a 180x360 PlateCarree map.
-function renderField(field, vmax, title) {
+// Render a (N_keep,) field as a 180x360 PlateCarree map onto the given
+// canvas. Pass null for `titleElement` to skip title update.
+function renderFieldTo(field, vmax, title, mapCanvasEl, mapCtxEl,
+                       cbarCanvasEl, cbarCtxEl, titleElement) {
   const nLat = META.lat_size, nLon = META.lon_size;
   const small = document.createElement("canvas");
   small.width = nLon; small.height = nLat;
@@ -289,59 +329,60 @@ function renderField(field, vmax, title) {
     const flat = KEEP_IDX[k];
     const lat = Math.floor(flat / nLon);
     const lon = flat % nLon;
-    // Display lat=0 at TOP (north) -> flip vertical
     const row = (nLat - 1) - lat;
     const px = (row * nLon + lon) * 4;
-    let t = field[k] * invVmax;            // -1..+1
+    let t = field[k] * invVmax;
     if (t < -1) t = -1; else if (t > 1) t = 1;
     const li = Math.round((t + 1) * 0.5 * 255);
     data[px + 0] = LUT[li * 3 + 0];
     data[px + 1] = LUT[li * 3 + 1];
     data[px + 2] = LUT[li * 3 + 2];
-    // alpha already 255
   }
   sctx.putImageData(img, 0, 0);
 
-  // Scale up to the visible canvas with pixelated rendering.
-  mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
-  mapCtx.imageSmoothingEnabled = false;
-  mapCtx.drawImage(small, 0, 0, mapCanvas.width, mapCanvas.height);
-
-  titleEl.textContent = title;
-  drawColorbar(vmax);
+  mapCtxEl.clearRect(0, 0, mapCanvasEl.width, mapCanvasEl.height);
+  mapCtxEl.imageSmoothingEnabled = false;
+  mapCtxEl.drawImage(small, 0, 0, mapCanvasEl.width, mapCanvasEl.height);
+  if (titleElement) titleElement.textContent = title;
+  drawColorbarTo(vmax, cbarCanvasEl, cbarCtxEl);
 }
 
-function drawColorbar(vmax) {
-  const W = cbarCanvas.width, H = cbarCanvas.height;
-  cbarCtx.clearRect(0, 0, W, H);
+// Thin wrapper for the prediction canvas (existing call sites).
+function renderField(field, vmax, title) {
+  renderFieldTo(field, vmax, title,
+                 mapCanvas, mapCtx, cbarCanvas, cbarCtx, titleEl);
+}
+
+function drawColorbarTo(vmax, cbarCanvasEl, cbarCtxEl) {
+  const W = cbarCanvasEl.width, H = cbarCanvasEl.height;
+  cbarCtxEl.clearRect(0, 0, W, H);
   const barH = 16, pad = 12;
   const x0 = pad, x1 = W - pad;
   const y0 = 4, y1 = y0 + barH;
-  // Gradient strip.
   for (let x = x0; x < x1; x++) {
     const t = (x - x0) / (x1 - x0);
     const li = Math.round(t * 255);
-    cbarCtx.fillStyle = `rgb(${LUT[li * 3]}, ${LUT[li * 3 + 1]}, ${LUT[li * 3 + 2]})`;
-    cbarCtx.fillRect(x, y0, 1, barH);
+    cbarCtxEl.fillStyle = `rgb(${LUT[li * 3]}, ${LUT[li * 3 + 1]}, ${LUT[li * 3 + 2]})`;
+    cbarCtxEl.fillRect(x, y0, 1, barH);
   }
-  // Border.
-  cbarCtx.strokeStyle = "#888";
-  cbarCtx.lineWidth = 1;
-  cbarCtx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, barH - 1);
-  // Tick labels.
-  cbarCtx.fillStyle = "#333";
-  cbarCtx.font = "12px ui-monospace, Menlo, monospace";
-  cbarCtx.textBaseline = "top";
+  cbarCtxEl.strokeStyle = "#888";
+  cbarCtxEl.lineWidth = 1;
+  cbarCtxEl.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, barH - 1);
+  cbarCtxEl.fillStyle = "#333";
+  cbarCtxEl.font = "12px ui-monospace, Menlo, monospace";
+  cbarCtxEl.textBaseline = "top";
   const lbl = (v) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}`;
-  cbarCtx.textAlign = "left";
-  cbarCtx.fillText(lbl(-vmax), x0, y1 + 4);
-  cbarCtx.textAlign = "center";
-  cbarCtx.fillText("0", (x0 + x1) / 2, y1 + 4);
-  cbarCtx.textAlign = "right";
-  cbarCtx.fillText(lbl(+vmax), x1, y1 + 4);
-  // Units.
-  cbarCtx.textAlign = "center";
-  cbarCtx.fillText("SSH trend (mm/yr)", W / 2, y1 + 20);
+  cbarCtxEl.textAlign = "left";
+  cbarCtxEl.fillText(lbl(-vmax), x0, y1 + 4);
+  cbarCtxEl.textAlign = "center";
+  cbarCtxEl.fillText("0", (x0 + x1) / 2, y1 + 4);
+  cbarCtxEl.textAlign = "right";
+  cbarCtxEl.fillText(lbl(+vmax), x1, y1 + 4);
+  cbarCtxEl.textAlign = "center";
+  cbarCtxEl.fillText("SSH trend (mm/yr)", W / 2, y1 + 20);
+}
+function drawColorbar(vmax) {
+  drawColorbarTo(vmax, cbarCanvas, cbarCtx);
 }
 
 async function runOnce() {
@@ -400,6 +441,10 @@ async function runOnce() {
     vmaxEl.textContent =
       `vmax: ±${vmax.toFixed(2)} mm/yr   (area-weighted std × 1.5; std=${std.toFixed(2)})   ` +
       `infer ${(t2 - t1).toFixed(0)} ms, total ${(t2 - t0).toFixed(0)} ms`;
+
+    // ---- AVISO observed trend for the same (anchor, horizon) ----
+    renderObsTrend(anchor, horizon, field, std);
+
     setStatus(`done in ${(t2 - t0).toFixed(0)} ms (inference ${(t2 - t1).toFixed(0)} ms)`);
   } catch (e) {
     console.error(e);
@@ -407,6 +452,58 @@ async function runOnce() {
   } finally {
     runBtn.disabled = false;
   }
+}
+
+// Render the AVISO observed trend for (anchor, horizon) into the obs
+// canvas, and also compute pattern correlation with the model prediction
+// for direct comparison. Hides the obs panel if no precomputed combo or
+// no DOM elements present.
+function renderObsTrend(anchor, horizon, predField, predStd) {
+  if (!obsMapCanvas || !OBS_TRENDS || !OBS_TRENDS_INDEX) return;
+  const key = `${anchor}|${horizon}`;
+  const row = OBS_TRENDS_INDEX.get(key);
+  if (row === undefined) {
+    // Out of range -- hide the obs panel.
+    obsTitleEl.textContent = "AVISO observed: not available for this window";
+    obsMapCtx.clearRect(0, 0, obsMapCanvas.width, obsMapCanvas.height);
+    obsCbarCtx.clearRect(0, 0, obsCbarCanvas.width, obsCbarCanvas.height);
+    obsVmaxEl.textContent =
+      `anchor + horizon ${anchor + horizon} exceeds the AVISO record ` +
+      `(precomputed combos: ${OBS_TRENDS_INDEX.size}).`;
+    return;
+  }
+  const nKeep = META.n_keep;
+  const off = row * nKeep;
+  const obsField = new Float32Array(nKeep);
+  for (let k = 0; k < nKeep; k++) {
+    obsField[k] = f16toF32(OBS_TRENDS[off + k]);
+  }
+  // The precompute already demeans area-weighted; recompute std for vmax.
+  let ws = 0, var2 = 0;
+  for (let k = 0; k < nKeep; k++) {
+    ws += COS_LAT[k];
+    var2 += COS_LAT[k] * obsField[k] * obsField[k];
+  }
+  const obsStd = Math.sqrt(var2 / ws);
+  const obsVmax = Math.max(1.5 * obsStd, 0.05);
+
+  // Pattern correlation against the model prediction (area-weighted).
+  let num = 0, denP = 0, denO = 0;
+  for (let k = 0; k < nKeep; k++) {
+    const w = COS_LAT[k];
+    num  += w * predField[k] * obsField[k];
+    denP += w * predField[k] * predField[k];
+    denO += w * obsField[k]  * obsField[k];
+  }
+  const corr = num / Math.sqrt(Math.max(denP, 1e-30) * Math.max(denO, 1e-30));
+
+  renderFieldTo(obsField, obsVmax,
+    `AVISO observed trend  ${anchor}–${anchor + horizon}  (${horizon}-yr)`,
+    obsMapCanvas, obsMapCtx, obsCbarCanvas, obsCbarCtx, obsTitleEl);
+
+  obsVmaxEl.textContent =
+    `vmax: ±${obsVmax.toFixed(2)} mm/yr   std=${obsStd.toFixed(2)}   ` +
+    `pattern corr (model vs AVISO) = ${corr.toFixed(3)}`;
 }
 
 runBtn.addEventListener("click", runOnce);
